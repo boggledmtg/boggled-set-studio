@@ -1,0 +1,18 @@
+[package]
+name = "import"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+domain = { path = "../domain" }
+store = { path = "../store" }
+mse = { path = "../mse" }
+serde_json.workspace = true
+thiserror.workspace = true
+zip.workspace = true
+uuid.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+image.workspace = true
+tempfile = "3"

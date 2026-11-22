@@ -51,7 +51,7 @@ Every imported face records where it came from:
 }
 ```
 
-Unknown keys are preserved. A field the importer does not know how to map stays in `boggled.mseFields` rather than being dropped. Warnings name cards that are missing a name, a type line, or a stylesheet.
+The importer accepts MSE's underscore field names and the set's default stylesheet. The native short name `m15-altered` maps to `magic-m15-altered.mse-style`. Scalar set-info fields outside the standard mapping go under `boggled.mseFields`. Set-wide style options go under `boggled.styling`. For automatically numbered cards the import metadata records the initial BSS number, so the Windows engine can reproduce MSE numbering until the user overrides it.
 
 | Format id | Detect | Notes |
 | --- | --- | --- |

@@ -1,0 +1,1194 @@
+openapi: 3.0.3
+info:
+  title: Boggled Set Studio
+  version: 0.1.0
+  description: |
+    Local HTTP API for one Boggled Set Studio process. The set folder on disk
+    is the database. This server is the way the editor and the `boggled` CLI
+    mutate it.
+
+    Bind address is `127.0.0.1`. Every `/api` route and `GET /events` requires
+    `Authorization: Bearer <token>`. The token, port, and pid are written to
+    `server.json` in the support directory when `boggled serve` starts. Static
+    files from the built editor do not require the token. `OPTIONS` does not
+    require the token. `GET /terminal` upgrades without the header; the first
+    WebSocket text frame carries the token.
+
+    CORS allows any origin, method, and header, and exposes every response header.
+
+    Set-scoped routes take the absolute set root in `X-Boggled-Set`. Send the
+    `path` string returned by init, open, or import. The server normalizes `.`
+    and `..` and does not require the path to be canonicalized.
+
+    A successful read or write of one JSON document returns `ETag` (quoted
+    revision) and `X-Revision` (the same hash, unquoted). The revision is the
+    SHA-256 of the file bytes. `PUT` requires `If-Match` with that revision.
+    A missing header is 428. A mismatch is 409 and does not write.
+
+    Writes merge onto the existing document. Unknown keys are kept. `boggled`
+    is merged one level deep. A card `uuid` in a create or update body is ignored.
+    JSON on disk is UTF-8, two-space indented, with a trailing newline.
+
+    Each successful mutation is one undo step for that set, kept in memory
+    until the process exits. `POST /api/sets/init`, render, and direct disk
+    edits are not steps. See `/api/history`.
+servers:
+  - url: http://127.0.0.1:{port}
+    variables:
+      port:
+        default: "4173"
+tags:
+  - name: session
+  - name: set
+  - name: cards
+  - name: keywords
+  - name: render
+  - name: exchange
+  - name: history
+  - name: pack
+  - name: events
+security:
+  - bearerAuth: []
+paths:
+  /api/health:
+    get:
+      tags: [session]
+      summary: Liveness check
+      responses:
+        "200":
+          description: The process is accepting requests.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/sets/init:
+    post:
+      tags: [set]
+      summary: Create a set folder and open it
+      description: |
+        Refuses when `path` already exists. Writes the harness, `set.json`,
+        and the git ignore files. Does not run git. This call is not an undo
+        step. History for the new set starts empty.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path:
+                  type: string
+                  description: Directory that does not exist yet.
+                name:
+                  type: string
+                  default: Untitled Set
+                code:
+                  type: string
+                  default: SET
+      responses:
+        "200":
+          description: The folder exists and is open.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PathBody"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/sets/open:
+    post:
+      tags: [set]
+      summary: Open an existing set folder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path:
+                  type: string
+      responses:
+        "200":
+          description: The set is registered in this process.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PathBody"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/sets/close:
+    post:
+      tags: [set]
+      summary: Close a set in this process
+      description: |
+        Drops the directory watcher. The folder stays on disk. Undo history
+        for that path stays until the process exits.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path:
+                  type: string
+      responses:
+        "200":
+          description: The set is closed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkBody"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/sets:
+    get:
+      tags: [set]
+      summary: List sets opened in this process
+      responses:
+        "200":
+          description: Absolute paths, in process order.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sets]
+                properties:
+                  sets:
+                    type: array
+                    items:
+                      type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/set:
+    get:
+      tags: [set]
+      summary: Read set.json
+      parameters:
+        - $ref: "#/components/parameters/Set"
+      responses:
+        "200":
+          description: The set document.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            X-Revision:
+              $ref: "#/components/headers/XRevision"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SetDocument"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/Error"
+    put:
+      tags: [set]
+      summary: Merge fields into set.json
+      description: |
+        One undo step labeled `Edit set`. Sends only the keys to change.
+        `boggled` is merged one level deep, so a design brief does not erase
+        the rest of the studio object.
+      parameters:
+        - $ref: "#/components/parameters/Set"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetDocument"
+      responses:
+        "200":
+          description: The merged document.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            X-Revision:
+              $ref: "#/components/headers/XRevision"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SetDocument"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "428":
+          $ref: "#/components/responses/Error"
+  /api/cards:
+    get:
+      tags: [cards]
+      summary: List card and token faces
+      description: Sorted by collector number, then uuid. Includes faces the editor cannot render.
+      parameters:
+        - $ref: "#/components/parameters/Set"
+      responses:
+        "200":
+          description: One summary per face file.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cards]
+                properties:
+                  cards:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/CardSummary"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/Error"
+    post:
+      tags: [cards]
+      summary: Create a normal creature
+      description: |
+        Allocates a new uuid. The body is a partial card and may be `{}`.
+        A client-supplied uuid is ignored. After derive, the face must be a
+        normal creature. The undo label is `Create {name}`. When auto-render
+        is on, `boggled.renderFile` is set before the undo snapshot and the
+        PNG is written after it.
+      parameters:
+        - $ref: "#/components/parameters/Set"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CardPatch"
+      responses:
+        "201":
+          description: The created card.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            X-Revision:
+              $ref: "#/components/headers/XRevision"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardDocument"
+        "400":
+          description: The face is not a normal creature, or the document is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/cards/{uuid}:
+    parameters:
+      - $ref: "#/components/parameters/Uuid"
+      - $ref: "#/components/parameters/Set"
+    get:
+      tags: [cards]
+      summary: Read one face
+      responses:
+        "200":
+          description: The card or token document.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            X-Revision:
+              $ref: "#/components/headers/XRevision"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardDocument"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/Error"
+    put:
+      tags: [cards]
+      summary: Merge fields into one face
+      description: |
+        The saved face must stay a normal creature. Derived fields (mana value,
+        colors, color identity, types, subtypes, supertypes) are rewritten.
+        The undo label is `Edit {name}` using the name after the save.
+        Render PNG bytes are not part of the snapshot.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CardPatch"
+      responses:
+        "200":
+          description: The merged card.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            X-Revision:
+              $ref: "#/components/headers/XRevision"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardDocument"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "428":
+          $ref: "#/components/responses/Error"
+    delete:
+      tags: [cards]
+      summary: Delete any face
+      description: |
+        Allowed for creatures and for faces the editor cannot render.
+        Also deletes `renders/{uuid}.png` when that file exists. The undo
+        label is `Delete {name}`. Restoring the card re-renders it. The PNG
+        delete on the way down is cleanup, not its own step.
+      responses:
+        "200":
+          description: The face file is gone.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [uuid]
+                properties:
+                  uuid:
+                    type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/cards/{uuid}/art:
+    post:
+      tags: [cards]
+      summary: Copy an illustration into the set
+      description: |
+        Copies `path` to `art/{uuid}.{ext}` and sets `boggled.artFile`.
+        Allowed on any face. Render runs only for a supported creature.
+        The undo step restores the previous image bytes and the card JSON.
+        Label is `Set illustration`.
+      parameters:
+        - $ref: "#/components/parameters/Uuid"
+        - $ref: "#/components/parameters/Set"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path:
+                  type: string
+                  description: Absolute path of a png, jpg, jpeg, webp, or gif.
+      responses:
+        "200":
+          description: The card with the new artFile.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            X-Revision:
+              $ref: "#/components/headers/XRevision"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardDocument"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "428":
+          $ref: "#/components/responses/Error"
+  /api/cards/{uuid}/picture:
+    get:
+      tags: [cards]
+      summary: Rendered card PNG
+      description: |
+          With the Windows runtime, returns the current MSE image and layout.
+          Otherwise returns `renders/{uuid}.png`. When the file is missing, renders and
+        writes it. That write is not an undo step. An unsupported frame is
+        400 with `unsupported frame` and does not write a PNG.
+      parameters:
+        - $ref: "#/components/parameters/Uuid"
+        - $ref: "#/components/parameters/Set"
+      responses:
+        "200":
+          description: PNG bytes.
+            headers:
+              X-Boggled-Layout:
+                description: Native field rectangles in 375 × 523 logical coordinates, encoded as JSON.
+                schema: { type: string }
+              X-Revision:
+                description: Face revision for the native preview.
+                schema: { type: string }
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/keywords:
+    get:
+      tags: [keywords]
+      summary: List keyword files
+      parameters:
+        - $ref: "#/components/parameters/Set"
+      responses:
+        "200":
+          description: Each keyword with its revision.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [keywords]
+                properties:
+                  keywords:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, revision, keyword]
+                      properties:
+                        id:
+                          type: string
+                        revision:
+                          type: string
+                        keyword:
+                          $ref: "#/components/schemas/KeywordDocument"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/Error"
+    post:
+      tags: [keywords]
+      summary: Create a keyword
+      description: "Undo label is `Create keyword {name}`."
+      parameters:
+        - $ref: "#/components/parameters/Set"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id:
+                  type: string
+                  description: Filename stem. Defaults to a slug of the name.
+                name:
+                  type: string
+                  default: Keyword
+                reminder:
+                  type: string
+                rules:
+                  type: string
+      responses:
+        "201":
+          description: The keyword document.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            X-Revision:
+              $ref: "#/components/headers/XRevision"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KeywordDocument"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/keywords/{id}:
+    parameters:
+      - $ref: "#/components/parameters/KeywordId"
+      - $ref: "#/components/parameters/Set"
+    get:
+      tags: [keywords]
+      summary: Read one keyword
+      responses:
+        "200":
+          description: The keyword document.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            X-Revision:
+              $ref: "#/components/headers/XRevision"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KeywordDocument"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/Error"
+    put:
+      tags: [keywords]
+      summary: Merge fields into a keyword
+      description: "The `id` key in the body is ignored. Undo label is `Edit keyword {name}`."
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/KeywordDocument"
+      responses:
+        "200":
+          description: The merged keyword.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            X-Revision:
+              $ref: "#/components/headers/XRevision"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KeywordDocument"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "428":
+          $ref: "#/components/responses/Error"
+    delete:
+      tags: [keywords]
+      summary: Delete a keyword
+      description: "Undo label is `Delete keyword {id}`."
+      responses:
+        "200":
+          description: The file is gone.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id]
+                properties:
+                  id:
+                    type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/render:
+    post:
+      tags: [render]
+      summary: Render every face
+      description: |
+        Supported creatures are written to `renders/{uuid}.png`. Other faces
+        are listed in `failed` and do not stop the rest. Render is not an undo step.
+      parameters:
+        - $ref: "#/components/parameters/Set"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: What painted and what did not.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RenderReport"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/render/{uuid}:
+    post:
+      tags: [render]
+      summary: Render one face
+      parameters:
+        - $ref: "#/components/parameters/Uuid"
+        - $ref: "#/components/parameters/Set"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: The face rendered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RenderReport"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/validate:
+    post:
+      tags: [set]
+      summary: Validate the open set
+      description: Reads the folder and returns warnings. Does not write.
+      parameters:
+        - $ref: "#/components/parameters/Set"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Warnings. An empty array means the known checks passed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [warnings]
+                properties:
+                  warnings:
+                    type: array
+                    items:
+                      type: object
+                      required: [path, message]
+                      properties:
+                        path:
+                          type: string
+                        message:
+                          type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/import:
+    post:
+      tags: [exchange]
+      summary: Import an MSE .mse-set package
+      description: |
+        Writes a new set folder and opens it. One undo step labeled `Import set`.
+        Undo deletes that folder only when every file still matches what import
+        wrote and no extra file is present. Redo recreates the files only when
+        the destination does not exist. See import.md.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source, dest]
+              properties:
+                source:
+                  type: string
+                  description: Path of the .mse-set package.
+                dest:
+                  type: string
+                  description: New set folder. Must not already exist.
+      responses:
+        "200":
+          description: The imported set is open.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [setPath, cards, tokens, keywords, warnings]
+                properties:
+                  setPath:
+                    type: string
+                  cards:
+                    type: integer
+                  tokens:
+                    type: integer
+                  keywords:
+                    type: integer
+                  warnings:
+                    type: array
+                    items:
+                      type: string
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/export:
+    post:
+      tags: [exchange]
+      summary: Assemble one export file
+      description: |
+        `mtgjson` is the only format. The file inlines cards and tokens and
+        strips `boggled`. The set folder stays the database. Default destination
+        is `export/{code}.json` inside the set. One undo step labeled
+        `Export {format}` restores the previous bytes, or deletes the file when
+        export created it.
+      parameters:
+        - $ref: "#/components/parameters/Set"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                format:
+                  type: string
+                  default: mtgjson
+                path:
+                  type: string
+                  description: Destination file. Omitted uses the default.
+      responses:
+        "200":
+          description: The file was written.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [path, format]
+                properties:
+                  path:
+                    type: string
+                  format:
+                    type: string
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/export/formats:
+    get:
+      tags: [exchange]
+      summary: List export formats
+      responses:
+        "200":
+          description: Formats this process can write.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [formats]
+                properties:
+                  formats:
+                    type: array
+                    items:
+                      type: string
+                    example: ["mtgjson"]
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/history:
+    get:
+      tags: [history]
+      summary: List undo and redo labels
+      description: |
+        Newest first. `X-Boggled-Set` may name a closed set when this process
+        still has history for that path, which is how import can be redone
+        after undo removed the folder.
+      parameters:
+        - $ref: "#/components/parameters/Set"
+      responses:
+        "200":
+          description: Labels only. The file snapshots stay on the server.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/History"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/history/undo:
+    post:
+      tags: [history]
+      summary: Undo the newest API edit
+      description: |
+        Applies the stored before-bytes only when every file still matches the
+        recorded after-bytes (or both are missing). A mismatch returns 409,
+        leaves the undo entry, and clears redo. An empty stack is 400
+        `nothing to undo`. After a file undo, a restored creature is rendered
+        again. A deleted card loses its render PNG.
+      parameters:
+        - $ref: "#/components/parameters/Set"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: The stacks after the step.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/History"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          description: A file no longer matches the recorded result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: the files changed outside this history
+        "500":
+          $ref: "#/components/responses/Error"
+  /api/history/redo:
+    post:
+      tags: [history]
+      summary: Redo the newest undone edit
+      description: |
+        Applies the after-bytes only when the files still match the before-bytes.
+        A mismatch returns 409 and leaves the redo entry in place. An empty
+        redo stack is 400 `nothing to redo`.
+      parameters:
+        - $ref: "#/components/parameters/Set"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: The stacks after the step.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/History"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
+  /api/pack:
+    get:
+      tags: [pack]
+      summary: Full Magic Pack status
+      responses:
+        "200":
+          description: Whether the pinned pack is on disk.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ready, path, commit]
+                properties:
+                  ready:
+                    type: boolean
+                  path:
+                    type: string
+                  commit:
+                    type: string
+                    example: cec045982f40870712c0d8f3f450d30a036d87a8
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/pack/download:
+    post:
+      tags: [pack]
+      summary: Download the pinned Full Magic Pack
+      description: |
+        Fetches the GitHub codeload zip of the pinned commit and extracts
+        `data/` and `Magic - Fonts/`. Binaries and the tutorial document are
+        left out. This call hits the network.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: The pack is ready.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ready, path]
+                properties:
+                  ready:
+                    type: boolean
+                    enum: [true]
+                  path:
+                    type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "502":
+          $ref: "#/components/responses/Error"
+  /events:
+    get:
+      tags: [events]
+      summary: File-change stream for one open set
+      description: |
+        `text/event-stream`. The browser cannot set `Authorization` on
+        `EventSource`, so the client reads this with `fetch` and a bearer
+        header. Events are debounced about 200 ms. `event` is `set`, `card`,
+        `keyword`, `art`, `render`, or `rescan`. `data` is JSON
+        `{"paths":["cards/….json"]}` except `rescan`, whose data is `{}`.
+        A lagged broadcast becomes `rescan`. Paths are relative and use `/`.
+        Temporary files ending in `.tmp` are ignored. The UI refetches; it
+        does not apply a patch from the event. Our own writes are events too,
+        and they are not new undo steps.
+      parameters:
+        - $ref: "#/components/parameters/Set"
+      responses:
+        "200":
+          description: The stream stays open.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/Error"
+  /terminal:
+    get:
+      tags: [events]
+      summary: Terminal WebSocket
+      description: |
+        Upgrade to WebSocket. The first text frame is JSON
+        `{ "type": "auth", "token", "set", "cols", "rows", "session"? }`.
+        `session` reattaches while that PTY is alive. A new session starts
+        the configured command, which defaults to the platform shell, with
+        cwd set to the set folder.
+
+        The server replies with a text frame
+        `{ "type": "started", "session" }` and then binary output, including
+        any bytes buffered for a reattached session. A rejected token or set
+        is `{ "type": "error", "error" }`.
+
+        Client binary frames are terminal input. Client text frames are JSON
+        `{ "type": "resize", "cols", "rows" }` or `{ "type": "close" }`.
+        Any other text is written to the PTY as bytes.
+      responses:
+        "101":
+          description: WebSocket upgrade.
+        "401":
+          description: Not used. A bad token is a WebSocket text frame, then the socket closes.
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    Set:
+      name: X-Boggled-Set
+      in: header
+      required: true
+      schema:
+        type: string
+      description: Absolute set root returned by init, open, or import.
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      schema:
+        type: string
+      description: Quoted or raw revision from `ETag` or `X-Revision`.
+    Uuid:
+      name: uuid
+      in: path
+      required: true
+      schema:
+        type: string
+    KeywordId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Filename stem. ASCII letters, digits, `-`, and `_`.
+  headers:
+    ETag:
+      schema:
+        type: string
+      description: Quoted content hash.
+    XRevision:
+      schema:
+        type: string
+      description: Unquoted content hash. The editor reads this header.
+  responses:
+    Unauthorized:
+      description: Missing or wrong bearer token.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: missing bearer token
+    Error:
+      description: The call failed. `error` is a single string.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+    OkBody:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+    PathBody:
+      type: object
+      required: [path]
+      properties:
+        path:
+          type: string
+    History:
+      type: object
+      required: [undo, redo]
+      properties:
+        undo:
+          type: array
+          items:
+            type: string
+          description: Newest first.
+        redo:
+          type: array
+          items:
+            type: string
+          description: Newest first.
+    CardSummary:
+      type: object
+      required: [folder, uuid, revision, name, manaCost, manaValue, type, power, toughness, rarity, number, colors, layout, supported]
+      properties:
+        folder:
+          type: string
+          enum: [cards, tokens]
+        uuid:
+          type: string
+        revision:
+          type: string
+        name:
+          type: string
+        manaCost:
+          type: string
+        manaValue:
+          type: number
+        type:
+          type: string
+        power:
+          type: string
+        toughness:
+          type: string
+        rarity:
+          type: string
+        number:
+          type: string
+        colors:
+          type: array
+          items:
+            type: string
+        layout:
+          type: string
+        supported:
+          type: boolean
+          description: True when the editor can render this face.
+    CardDocument:
+      type: object
+      additionalProperties: true
+      description: |
+        One MTGJSON card face plus a `boggled` object. Known studio keys
+        include schemaVersion, lore, artDirection, artPrompt, designNotes,
+        stylesheet, styling, mseFields, artFile, and renderFile.
+    CardPatch:
+      type: object
+      additionalProperties: true
+      description: |
+        Any card fields to merge. The editor sends name, manaCost, type,
+        text, flavorText, power, toughness, rarity, number, artist, and
+        `boggled.designNotes`.
+    SetDocument:
+      type: object
+      additionalProperties: true
+      description: |
+        MTGJSON set fields plus `boggled`. The editor edits name, code, and
+        `boggled.designBrief`.
+    KeywordDocument:
+      type: object
+      additionalProperties: true
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        reminder:
+          type: string
+        rules:
+          type: string
+        boggled:
+          type: object
+          additionalProperties: true
+    RenderReport:
+      type: object
+      required: [rendered, failed]
+      properties:
+        rendered:
+          type: array
+          items:
+            type: string
+        failed:
+          type: array
+          items:
+            type: object
+            properties:
+              uuid:
+                type: string
+              error:
+                type: string

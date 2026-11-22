@@ -4,26 +4,30 @@ System shape for Boggled Set Studio. Product behavior is in the root `AGENTS.md`
 
 | Doc | What it contracts |
 | --- | --- |
-| [set-format.md](set-format.md) | Set folder, MTGJSON files, the `boggled` object, statistics, set harness |
-| [api.md](api.md) | HTTP, SSE, terminal socket, CLI, local auth |
-| [renderer.md](renderer.md) | Full Magic Pack interpreter and the frame allowlist |
+| [set-format.md](set-format.md) | Set folder, MTGJSON files, the `boggled` object, set harness |
+| [api.md](api.md) | HTTP, the file-change stream, terminal socket, local auth |
+| [openapi.yaml](openapi.yaml) | Machine-readable HTTP contract |
+| [cli.md](cli.md) | The `boggled` command |
+| [renderer.md](renderer.md) | Native Windows renderer, reference fixtures, and frame allowlist |
 | [import.md](import.md) | MSE `.mse-set` import |
+| [ui.md](ui.md) | Editor layout, pastel styling, and palette |
 
 ## Topology
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │ Frontend (React + TypeScript + Vite)                         │
-│  Card list, card form, rendered preview, keywords, stats     │
+│  Card list, card form, rendered preview, set info            │
 │  Terminal pane (xterm.js), right side                        │
 │  Custom titlebar only when the page was opened with ?shell=1│
-│  Data: fetch() and EventSource. Terminal: WebSocket.        │
+│  Data: fetch(). File changes: fetch() SSE. Terminal: WS.    │
 └─────────────┬───────────────────────────────┬────────────────┘
               │ REST + SSE                    │ WebSocket
               │ 127.0.0.1:<port>              │
 ┌─────────────▼───────────────────────────────▼────────────────┐
 │ Axum server (headless; Tauri is just one client)            │
-│  REST for sets, cards, keywords, import, render, stats      │
+│  REST for sets, cards, keywords, import, export, render     │
+│  In-memory undo stack, one per set, for this process        │
 │  SSE for disk changes                                       │
 │  WebSocket bridged to a PTY                                 │
 │  Serves the built frontend in production                    │
@@ -62,7 +66,7 @@ Runtime discovery file, rewritten on each start:
 | macOS | `~/Library/Application Support/boggled/server.json` |
 | Linux | `$XDG_DATA_HOME/boggled/server.json` or `~/.local/share/boggled/server.json` |
 
-`server.json` holds `pid`, `port`, and `token`. The token is a bearer secret for that process. App preferences live in `config.json` beside it: recent set paths, the terminal command line, the Full Magic Pack `data` path, and whether auto-render is on.
+`server.json` holds `pid`, `port`, and `token`. The token is a bearer secret for that process. App preferences live in `config.json` beside it: recent set paths, the terminal command line, the Full Magic Pack directory, and whether auto-render is on. `BOGGLED_HOME` replaces the support directory. `BOGGLED_PORT` chooses the listen port. `BOGGLED_IDLE_SECS` is the idle exit (15 minutes; `0` disables it).
 
 Bind address is `127.0.0.1` only. The rules for that token are in [api.md](api.md).
 
@@ -74,13 +78,13 @@ Cargo workspace. Each crate owns one reason to change. HTTP handlers stay thin a
 | --- | --- |
 | `domain` | MTGJSON-shaped types, the `boggled` extension, validation, ids, canonical JSON |
 | `store` | Set-folder reads and atomic writes, directory scan, path checks |
-| `mse` | Full Magic Pack index, package parser, script interpreter, text layout, image composite, render allowlist |
+| `mse` | Windows MSE integration, Full Magic Pack cache, legacy Rust renderer, render allowlist |
 | `import` | An MSE `.mse-set` package in, one Boggled set folder out |
-| `stats` | Aggregations computed from the card files |
-| `api` | Axum routes, bearer auth, SSE, static files |
+| `export` | One assembled file out. `mtgjson` is the format in this version |
+| `api` | Axum routes, bearer auth, the undo stack, SSE, static files |
 | `terminal` | PTY sessions and the WebSocket bridge |
 | `cli` | The `boggled` binary agents call |
-| `desktop` | Tauri shell: window, titlebar permissions, file dialogs, open-in-browser, server spawn |
+| `boggled-desktop` | Tauri shell: window, titlebar permissions, native folder and file dialogs, server spawn |
 
 `domain` does not import Axum, Tauri, or the renderer. `store` does not render. `mse` and `import` do not know about HTTP. `cli` calls `api` over HTTP so a direct disk edit and a CLI edit meet in the same files, and so the CLI cannot drift onto a private mutation path.
 
@@ -89,15 +93,14 @@ Cargo workspace. Each crate owns one reason to change. HTTP handlers stay thin a
 | MSE capability | Where it lives |
 | --- | --- |
 | Set and card editing | Frontend editor, `store`, `domain`. Shape in [set-format.md](set-format.md) |
-| Many card layouts | `mse` allowlist. [renderer.md](renderer.md) |
-| Symbol fonts and tagged rules text | `mse` layout |
-| Keywords and reminder text | `keywords/` plus the editor |
+| Card layouts | `mse` allowlist. This version renders `magic-m15-altered.mse-style` for a normal creature. [renderer.md](renderer.md) |
+| Symbol fonts and tagged rules text | `mse` layout. Fonts come from the pack's `Magic - Fonts` folder |
+| Keywords and reminder text | `keywords/` and the keyword routes. The card form leaves the card's `keywords` array as stored |
 | Text shrink-to-fit | `mse` layout |
-| Find, replace, filter, sort | Frontend over the card list |
-| Undo | Frontend history of editor edits. Disk has no undo log; git is the history for agent edits |
-| Statistics | `stats`. Catalog in [set-format.md](set-format.md) |
-| Image export | `renders/` plus a later sheet/PDF export |
-| JSON interchange | The set folder, and `export-mtgjson` |
+| Find | The card list search field |
+| Undo | Server memory, one stack per set, shared by the UI and the CLI. [api.md](api.md) |
+| Card images | `renders/<uuid>.png` |
+| JSON interchange | The set folder, and `POST /api/export` with format `mtgjson` |
 | Import an MSE set | [import.md](import.md). `.mse-set` only, for now |
 | Booster definitions | Later `packs/` files and a pack module. Not required to render cards |
 | Locales | Read from the FMP locale packages when a style asks for them |

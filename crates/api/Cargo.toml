@@ -1,0 +1,33 @@
+[package]
+name = "api"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+domain = { path = "../domain" }
+store = { path = "../store" }
+mse = { path = "../mse" }
+import = { path = "../import" }
+export = { path = "../export" }
+terminal = { path = "../terminal" }
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tower.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+futures-util.workspace = true
+tokio-stream = { workspace = true, features = ["sync"] }
+thiserror.workspace = true
+notify.workspace = true
+reqwest.workspace = true
+uuid.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+sha2.workspace = true
+
+[dev-dependencies]
+zip.workspace = true

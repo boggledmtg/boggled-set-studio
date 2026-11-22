@@ -116,7 +116,7 @@ Keyword files are not an MTGJSON type. MSE-style keyword definitions live here s
 
 `schemaVersion` lives inside `boggled`. A migration walks every file in the set and bumps that number. It does not rewrite unrelated keys.
 
-An imported face may also carry `boggled.import`. That object is defined in [import.md](import.md).
+An imported set may carry its MSE set-info fields in `boggled.mseFields` and set-wide, stylesheet-specific options in `boggled.styling`. An imported face may also carry `boggled.import`. That object is defined in [import.md](import.md).
 
 ## Statistics
 

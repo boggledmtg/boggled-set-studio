@@ -14,7 +14,7 @@ When a file in the open set is saved, the UI updates. The backend also runs head
 
 ## What the user sees
 
-The editor follows Magic Set Editor's main workflow: a card list, a card form, a rendered card, set info, keywords, and statistics. The extra surface is the terminal pane.
+The editor follows Magic Set Editor's cards workspace: a card list, a card form, a rendered card, set info, and undo. Keyword definitions live in the set folder. The extra surface is the terminal pane. Layout, pastel styling, and the palette are in [docs/ui.md](docs/ui.md).
 
 The same React frontend loads in the Tauri window and in a normal browser. The custom titlebar is the only intentional visual difference. It is shown only when Tauri opened the page.
 
@@ -37,23 +37,26 @@ Read this file for how the product behaves. Open a doc below when the task touch
 | --- | --- |
 | [docs/architecture.md](docs/architecture.md) | You need the map of the running system: Tauri versus the Axum server, the crate split, process lifetime, or which MSE features live where. |
 | [docs/set-format.md](docs/set-format.md) | You are changing card or set JSON, the set folder layout, validation, statistics, or the harness that `boggled set init` writes. |
-| [docs/api.md](docs/api.md) | You are adding or changing an HTTP route, the file-change stream, the terminal socket, the CLI, or the local bearer token. |
+| [docs/api.md](docs/api.md) | You are adding or changing an HTTP route, the file-change stream, the terminal socket, undo, or the local bearer token. |
+| [docs/openapi.yaml](docs/openapi.yaml) | You are changing the HTTP contract. |
+| [docs/cli.md](docs/cli.md) | You are changing the `boggled` command. |
 | [docs/renderer.md](docs/renderer.md) | You are changing card rendering, Full Magic Pack loading, the script interpreter, or the frame allowlist. |
 | [docs/import.md](docs/import.md) | You are changing MSE `.mse-set` import, or adding another import format later. |
+| [docs/ui.md](docs/ui.md) | You are changing the editor layout, color, or visual styling. |
 
 ## Rules that keep the design intact
 
 - Treat the set folder as the database. Do not add a second source of truth.
 - Put studio-only data under the `boggled` object. Leave MTGJSON fields recognizable.
 - Keep one card face per file. Do not inline every card into `set.json`.
-- Render by interpreting a pinned Full Magic Pack `data` directory. Do not vendor that pack, its fonts, or the Magic Set Editor binaries in this repo, and do not shell out to `magicseteditor` as the renderer.
+- On Windows, use the native MSE engine with the pinned Full Magic Pack. Keep pack assets and fonts in the local runtime installation.
 - Add newly supported frames to the renderer allowlist on purpose. A template that appears in a future Full Magic Pack download is unsupported until this repo grows a test for it.
-- Do not port Magic Set Editor's C++ into this repository. Implement the package format and script behavior from the template files and MSE's public documentation.
+- Build editor geometry from the same native layout used for the card image. Distribute BSS under GPL-2.0-or-later and supply corresponding source for distributed native worker builds.
 - Keep the server bound to `127.0.0.1` and require its bearer token on HTTP, SSE, and the terminal socket.
 - Leave account and cloud upload as placeholders. Set files stay usable with no account.
 
 ## Product scope
 
-In scope: MSE-style set editing, keywords, statistics, the common Magic frames the allowlist names, committed card renders, an agent CLI, a headless server, a per-set harness, and import from an MSE `.mse-set` package. That import writes a normal set folder and then stops. The `.mse-set` is not kept as a second database.
+In scope: MSE-style set editing, keyword files, the M15 creature frame the allowlist names, card renders, an agent CLI, server-side undo, a headless server, a per-set harness, and import from an MSE `.mse-set` package. That import writes a normal set folder and then stops. The `.mse-set` is not kept as a second database.
 
 Out of scope for the architecture: mobile, an in-app chat model, an in-app image-generation provider, a generic multi-game engine, and compatibility with every future Full Magic Pack template without a code change.
